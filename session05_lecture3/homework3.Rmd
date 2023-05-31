@@ -1,8 +1,12 @@
 ---
-title: "Homework 3: Databases, web scraping, and a basic Shiny app"
-author: "Your name goes here"
+title: 'Homework 3: Databases, web scraping, and a basic Shiny app'
+author: "Danyel Desa"
 date: "`r Sys.Date()`"
 output:
+  word_document:
+    toc: yes
+  pdf_document:
+    toc: yes
   html_document:
     theme: flatly
     highlight: zenburn
@@ -10,8 +14,6 @@ output:
     toc: yes
     toc_float: yes
     code_folding: show
-  pdf_document:
-    toc: yes
 ---
 
 ```{r}
@@ -68,23 +70,121 @@ DBI::dbListTables(sky_westminster)
 
 You need to work with the `payments` and `members` tables and for now we just want the total among all years. To insert a new, blank chunk of code where you can write your beautiful code (and comments!), please use the following shortcut: `Ctrl + Alt + I` (Windows) or `cmd + option + I` (mac)
 
+```{r}
+#first we pull the payments and members tables from sky_westminster
+payments <- dplyr::tbl(sky_westminster, "payments")
+members <- dplyr::tbl(sky_westminster, "members")
+
+#left join the tables, mataching member_id from payments with id from members
+payments_members <- left_join (payments, members,by=c("member_id"="id"))
+
+MP_money <- payments_members %>% 
+  #first we collect all data since we are pulling from a database online
+  collect() %>%
+  #group by name of MP
+  group_by(name) %>% 
+  #create new variable total which sums up the donations that MP has received
+  summarise(total=sum(value)) %>% 
+  distinct() %>% 
+  arrange(desc(total))
+
+MP_money
+
+```
+
+We see Theresa May has received the highest donations with £2.8Mn
+
 
 ## Any `entity` that accounts for more than 5% of all donations?
 
 Is there any `entity` whose donations account for more than 5% of the total payments given to MPs over the 2020-2022 interval? Who are they and who did they give money to?
 
+```{r}
+donations_by_entity <- payments_members %>% 
+  # first collect since we are pulling from an online database
+  collect() %>% 
+  # calculate the total donations across all entities
+  summarise(entity, value,total_donations=sum(value)) %>% 
+  # group by entity and find out what % of the total they donated
+  group_by(entity) %>%
+  summarise(entity_donation=sum(value),percent=entity_donation/total_donations*100) %>% 
+  distinct() %>% 
+  arrange(desc(percent))
+  
+donations_by_entity
+
+
+```
+
+
 ## Do `entity` donors give to a single party or not?
 
 - How many distinct entities who paid money to MPS are there?
 - How many (as a number and %) donated to MPs belonging to a single party only?
+```{r}
+single_party_donors <- payments_members %>% 
+  #first collect
+  collect() %>% 
+  #calculate total number of donors
+  #group by entity and check if the number of parties donated to is more than one. We can do this by seeing the length of list of unique parties donated to.
+  group_by(entity) %>% 
+  summarise(single_party=(length(unique(party_id))==1)) %>%
+  distinct() %>% 
+  #calculate the total number of unique donors
+  summarise (single_party, total_donors=n()) %>% 
+  group_by (single_party) %>% 
+  summarise(number_donors=n(),
+            total_donors, 
+            percent=number_donors/total_donors) %>% 
+  distinct()
 
+single_party_donors
+```
+We see from the table above that the total number of entities donating is 2,213. The number of single party-donors is 2,036 or 92% if the total, and those donating to more than one party is 177 or 8% of the total.
 
 ## Which party has raised the greatest amount of money in each of the years 2020-2022? 
 
 I would like you to write code that generates the following table. 
 
+
 ```{r echo=FALSE, out.width="80%"}
 knitr::include_graphics(here::here("images", "total_donations_table.png"), error = FALSE)
+
+parties <- dplyr::tbl(sky_westminster, "parties")
+glimpse(parties)
+
+```
+
+
+
+```{r}
+donations_party_year <- payments_members %>% 
+  collect() %>% 
+  # convert year to int
+  mutate(year=as.numeric(substr(date,nchar(date)-4,nchar(date)))) %>% 
+  group_by(year) %>%
+  summarise(value,total_annual_donation=sum(value),party_id) %>% 
+  # group by all variables other than donation
+  group_by(year,party_id) %>% 
+  summarise(total_party_donation=sum(value),
+            prop=round(total_party_donation/total_annual_donation,5),
+            party_id) %>% 
+  distinct()
+  
+# join the tables
+donations_party_year <- left_join(donations_party_year, 
+                                  parties, 
+                                  by=c("party_id"="id"),
+                                  copy=TRUE)
+
+output_table <- donations_party_year %>%
+  ungroup() %>% 
+  select(year, name, total_party_donation, prop) %>% 
+  filter(!year==2019) %>% 
+  arrange(year)
+
+output_table
+
 ```
 
 
@@ -93,6 +193,8 @@ knitr::include_graphics(here::here("images", "total_donations_table.png"), error
 ```{r echo=FALSE, out.width="80%"}
 knitr::include_graphics(here::here("images", "total_donations_graph.png"), error = FALSE)
 ```
+
+
 
 This uses the default ggplot colour pallete, as I dont want you to worry about using the [official colours for each party](https://en.wikipedia.org/wiki/Wikipedia:Index_of_United_Kingdom_political_parties_meta_attributes). However, I would like you to ensure the parties are sorted according to total donations and not alphabetically. You may even want to remove some of the smaller parties that hardly register on the graph. Would facetting help you?  
 
@@ -123,12 +225,53 @@ toc() # stop timer
 
 
 glimpse(cdc_data)
+
 ```
 Can you query the database and replicate the following plot?
 
 ```{r echo=FALSE, out.width="100%"}
 knitr::include_graphics(here::here("images", "covid-CFR-ICU.png"), error = FALSE)
 ```
+```{r}
+data_collected <- cdc_data %>%
+  # group by all categories that we need
+  group_by(age_group,sex, icu_yn, death_yn) %>%
+  summarise(cases=n()) %>% 
+  # collect at the end
+  collect()
+
+```
+```{r}
+chart_data <- data_collected %>% 
+  # filter for only parameters we want  
+  filter(!age_group %in% c("Missing", NA),
+           sex %in% c("Female", "Male"),
+           icu_yn %in% c("No", "Yes")) %>%
+    group_by (age_group, sex, icu_yn) %>%   
+  # calculate CFR
+    summarise(deaths = sum(cases [death_yn == "Yes"], na.rm = TRUE),
+              total_cases = sum(cases),
+              cfr = round(100 * deaths/total_cases, 0)) %>% 
+  # change the ICU column
+  mutate(icu_yn = case_when(
+      icu_yn == "Yes" ~ "ICU Admission",
+      icu_yn == "No" ~ "No ICU Admission"))
+
+
+ggplot(chart_data, aes(y=cfr, x=age_group, fill="orange")) +
+  geom_col(show.legend =FALSE) + 
+  coord_flip() + 
+  theme_light(base_size = 5) +
+  labs(x = NULL, y = NULL, title = "Covid CFR % by age group, sex and ICU Admission") +
+  # add text
+  geom_text(aes(label = cfr, hjust = 1.2)) +
+  # facet wrap by ICU admission and gender
+  facet_grid(rows = vars(icu_yn), cols = vars(sex)) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1))
+
+ 
+```
+
 
 The previous plot is an aggregate plot for all three years of data. What if we wanted to plot Case Fatality Ratio (CFR) over time? Write code that collects the relevant data from the database and plots the following
 
@@ -137,6 +280,46 @@ The previous plot is an aggregate plot for all three years of data. What if we w
 knitr::include_graphics(here::here("images", "cfr-icu-overtime.png"), error = FALSE)
 ```
 
+```{r}
+data_collected_2 <- cdc_data %>%
+  # similar approach as above
+  group_by(case_month, age_group,sex, icu_yn, death_yn) %>%
+  summarise(cases=n()) %>% 
+  collect()
+
+```
+```{r}
+chart_data_2 <- data_collected_2 %>% 
+    filter(!age_group %in% c("Missing", NA),
+           sex %in% c("Female", "Male"),
+           icu_yn %in% c("No", "Yes")) %>%
+    group_by (case_month, age_group, sex, icu_yn) %>%   
+  
+    summarise(deaths = sum(cases [death_yn == "Yes"], na.rm = TRUE),
+              total_cases = sum(cases),
+              cfr = round(100 * deaths/total_cases, 0)) %>% 
+    
+  mutate(icu_yn = case_when(
+      icu_yn == "Yes" ~ "ICU Admission",
+      icu_yn == "No" ~ "No ICU Admission"))
+```
+```{r}
+
+ggplot(chart_data_2, aes(x=case_month, y=cfr, color = age_group, group = age_group)) +
+  geom_line() +
+  theme_light(base_size = 6) +
+  theme(axis.text.x = element_text(angle = 90), 
+        plot.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank()) +
+  labs(x = NULL, y = NULL, title = "Covid CFR % by age group, sex and ICU Admission") +
+  geom_text(data =.%>% filter(cfr != 0), aes(label = cfr, hjust = -0.4),
+            size = 2) +
+  facet_grid(rows = vars(icu_yn), cols = vars(sex)) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1))
+
+```
 
 For each patient, the dataframe also lists the patient's states and county [FIPS code](https://en.wikipedia.org/wiki/Federal_Information_Processing_Standard_state_code). The CDC also has information on the [NCHS Urban-Rural classification scheme for counties](https://www.cdc.gov/nchs/data_access/urban_rural.htm)
 ```{r}
@@ -145,7 +328,7 @@ urban_rural <- read_xlsx(here::here("data", "NCHSURCodes2013.xlsx")) %>%
 ```
 
 
-Each county belongs in seix diffent categoreis, with categories 1-4 being urban areas and categories 5-6 being rural, according to the following criteria captured in `x2013_code`
+Each county belongs in six different categories, with categories 1-4 being urban areas and categories 5-6 being rural, according to the following criteria captured in `x2013_code`
 
 Category name
 
@@ -161,6 +344,8 @@ Can you query the database, extract the relevant information, and reproduce the 
 
 ```{r echo=FALSE, out.width="100%"}
 knitr::include_graphics(here::here("images", "cfr-county-population.png"), error = FALSE)
+```
+```{r}
 ```
 
 
@@ -178,7 +363,7 @@ We will scrape and work with data foreign connected PACs that donate to US polit
 
 All data come from [OpenSecrets.org](https://www.opensecrets.org), a *"website tracking the influence of money on U.S. politics, and how that money affects policy and citizens' lives"*.
 
-```{r, eval=FALSE}
+```{r}
 #| label: allow-scraping-opensecrets
 #| warning: false
 #| message: false
@@ -200,7 +385,20 @@ contributions_tables <- base_url %>%
     -   Write a function that converts contribution amounts in `total`, `dems`, and `repubs` from character strings to numeric values.
     -   Separate the `country_of_origin_parent_company` into two such that country and parent company appear in different columns for country-level analysis.
 
-```{r, eval=FALSE}
+```{r}
+
+tables_extracted <- contributions_tables %>% 
+  html_nodes(css = "table") %>% 
+  html_table()
+  
+contributions <- tables_extracted[[1]] %>% 
+    janitor::clean_names()
+
+
+```
+
+
+```{r}
 # write a function to parse_currency
 parse_currency <- function(x){
   x %>%
@@ -243,6 +441,50 @@ contributions <- contributions %>%
 -   Map the `scrape_pac()` function over `urls` in a way that will result in a data frame called `contributions_all`.
 
 -   Write the data frame to a csv file called `contributions-all.csv` in the `data` folder.
+
+```{r}
+scrape_pac <- function(x) {
+  
+  html_to_read <- x %>% 
+    read_html()
+  
+  tables <- html_to_read %>% 
+    html_nodes(css = "table") %>% 
+    html_table()
+  
+  # extract just the first table
+  contributions <- tables[[1]] %>% 
+    janitor::clean_names()
+  
+  # use the code above to split country/parent and convert currencies
+  contributions <- contributions %>%
+    separate(country_of_origin_parent_company, 
+           into = c("country", "parent"), 
+           sep = "/", 
+           extra = "merge") %>%
+  mutate(
+    total = parse_currency(total),
+    dems = parse_currency(dems),
+    repubs = parse_currency(repubs),
+    year=str_sub(x, -4, -1))
+
+}
+
+```
+
+```{r}
+
+urls = c(
+  "https://www.opensecrets.org/political-action-committees-pacs/foreign-connected-pacs/2022"
+  ,"https://www.opensecrets.org/political-action-committees-pacs/foreign-connected-pacs/2021"
+  ,"https://www.opensecrets.org/political-action-committees-pacs/foreign-connected-pacs/2020"
+  ,"https://www.opensecrets.org/political-action-committees-pacs/foreign-connected-pacs/2019")
+
+contributions_all <- map_df(urls, scrape_pac)
+
+write.csv(contributions_all, here::here("data", "contributions_all.csv"), row.names=FALSE)
+
+```
 
 
 # Scraping consulting jobs
@@ -310,13 +552,13 @@ You can use chatGPT to get the basic layout of Shiny app, but you need to adjust
 
 # Deliverables
 
-There is a lot of explanatory text, comments, etc. You do not need these, so delete them and produce a stand-alone document that you could share with someone. Knit the edited and completed R Markdown (Rmd) file as a Word or HTML document (use the "Knit" button at the top of the script editor window) and upload it to Canvas. You must be commiting and pushing your changes to your own Github repo as you go along.
+There is a lot of explanatory text, comments, etc. You do not need these, so delete them and produce a stand-alone document that you could share with someone. Knit the edited and completed R Markdown (Rmd) file as a Word or HTML document (use the "Knit" button at the top of the script editor window) and upload it to Canvas. You must be committing and pushing your changes to your own Github repo as you go along.
 
 # Details
 
--   Who did you collaborate with: TYPE NAMES HERE
--   Approximately how much time did you spend on this problem set: ANSWER HERE
--   What, if anything, gave you the most trouble: ANSWER HERE
+-   Who did you collaborate with: Danyel Desa
+-   Approximately how much time did you spend on this problem set: 4 hours
+-   What, if anything, gave you the most trouble: Length of assignment
 
 **Please seek out help when you need it,** and remember the [15-minute rule](https://dsb2023.netlify.app/syllabus/#the-15-minute-rule){target="_blank"}. You know enough R (and have enough examples of code from class and your readings) to be able to do this. If you get stuck, ask for help from others, post a question on Slack-- and remember that I am here to help too!
 
